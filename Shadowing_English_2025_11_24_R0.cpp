@@ -30,9 +30,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QSet>
+#include <QUrl>
 
 #include <cmath>
 #include <algorithm>
+#include <random>
 
 //===================== Data model =====================
 
@@ -255,6 +258,7 @@ public:
             m_viewStart = 0.0;
             m_viewEnd = (m_duration > 0.0 ? m_duration : 1.0);
         }
+        ensureMockSamples();
         update();
     }
 
@@ -353,25 +357,63 @@ protected:
         QRectF r = rect().adjusted(5, 5, -5, -5);
         p.setRenderHint(QPainter::Antialiasing);
 
-        // fake waveform
-        QPen wavePen(QColor(0, 220, 220));
-        wavePen.setWidth(2);
-        p.setPen(wavePen);
+        ensureMockSamples();
 
-        QPainterPath path;
-        path.moveTo(r.left(), r.center().y());
-        const int steps = 200;
-        for (int i = 1; i <= steps; ++i) {
+        // Stylized waveform: generated mock data shaped like voice recordings
+        const int steps = std::max<int>(600, r.width());
+        const double halfH = r.height() * 0.48;
+
+        // Build a closed path (top + bottom) to fill the waveform body using
+        // the mock sample energy. This yields alternating quiet gaps and loud
+        // bursts similar to the reference screenshots.
+        QPainterPath body;
+        body.moveTo(r.left(), r.center().y());
+        for (int i = 0; i <= steps; ++i) {
             double tNorm = double(i) / steps;
-            double tView = m_viewStart +
-                tNorm * (m_viewEnd - m_viewStart);
+            double tView = m_viewStart + tNorm * (m_viewEnd - m_viewStart);
+            double globalNorm =
+                (m_duration > 0.0 ? tView / m_duration : tNorm);
+
+            // sample energy with tiny ripples for organic feel
+            double base = sampleAt(globalNorm);
+            double ripple = 0.06 * std::sin(16.0 * M_PI * tNorm)
+                + 0.04 * std::sin(28.0 * M_PI * tNorm + 0.7);
+            double amp = std::clamp(base + ripple, 0.02, 1.0);
+
             double x = r.left() + tNorm * r.width();
-            double y = r.center().y() +
-                std::sin((tView / std::max(m_duration, 0.001)) *
-                    12.0 * M_PI) * r.height() / 3.0;
-            path.lineTo(x, y);
+            double yTop = r.center().y() - amp * halfH;
+            body.lineTo(x, yTop);
         }
-        p.drawPath(path);
+        for (int i = steps; i >= 0; --i) {
+            double tNorm = double(i) / steps;
+            double tView = m_viewStart + tNorm * (m_viewEnd - m_viewStart);
+            double globalNorm =
+                (m_duration > 0.0 ? tView / m_duration : tNorm);
+
+            double base = sampleAt(globalNorm);
+            double ripple = 0.06 * std::sin(16.0 * M_PI * tNorm)
+                + 0.04 * std::sin(28.0 * M_PI * tNorm + 0.7);
+            double amp = std::clamp(base + ripple, 0.02, 1.0);
+
+            double x = r.left() + tNorm * r.width();
+            double yBot = r.center().y() + amp * halfH;
+            body.lineTo(x, yBot);
+        }
+        body.closeSubpath();
+
+        QLinearGradient grad(r.topLeft(), r.bottomLeft());
+        grad.setColorAt(0.0, QColor(122, 240, 213));
+        grad.setColorAt(1.0, QColor(0, 160, 210));
+        p.fillPath(body, grad);
+
+        QPen outline(QColor(0, 200, 220));
+        outline.setWidth(2);
+        p.setPen(outline);
+        p.drawPath(body);
+
+        // center baseline for balance
+        p.setPen(QPen(QColor(0, 130, 190, 180), 1.5, Qt::DashLine));
+        p.drawLine(QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y()));
 
         // draw selected region
         if (m_selBegin >= 0.0 && m_selEnd > m_selBegin) {
@@ -412,12 +454,68 @@ private:
         }
     }
 
+    void regenerateMockSamples(int targetCount = 3600)
+    {
+        m_mockSamples.clear();
+        m_mockSamples.reserve(targetCount);
+
+        std::mt19937 rng(1337);
+        std::uniform_real_distribution<double> uni(0.0, 1.0);
+        std::uniform_real_distribution<double> quiet(0.01, 0.05);
+        std::uniform_real_distribution<double> burst(0.55, 0.95);
+
+        while (m_mockSamples.size() < targetCount) {
+            bool isSilence = uni(rng) < 0.28;
+            int blockLen = isSilence ? (80 + int(uni(rng) * 140))
+                                     : (170 + int(uni(rng) * 320));
+            double phase1 = uni(rng) * 2.0 * M_PI;
+            double phase2 = uni(rng) * 2.0 * M_PI;
+
+            for (int i = 0; i < blockLen && m_mockSamples.size() < targetCount; ++i) {
+                double t = double(i) / std::max(1, blockLen - 1);
+                if (isSilence) {
+                    double val = quiet(rng) + 0.01 * std::sin(10.0 * M_PI * t);
+                    m_mockSamples.push_back(val);
+                } else {
+                    double envelope = std::sin(M_PI * t);
+                    double texture = 0.3 * std::sin(8.0 * M_PI * t + phase1)
+                        + 0.18 * std::sin(18.0 * M_PI * t + phase2);
+                    double randomPop = (uni(rng) > 0.92) ? 0.25 * uni(rng) : 0.0;
+                    double core = envelope * burst(rng) + std::fabs(texture) + randomPop;
+                    double air = 0.04 * uni(rng);
+                    m_mockSamples.push_back(std::clamp(core + air, 0.0, 1.0));
+                }
+            }
+        }
+    }
+
+    void ensureMockSamples()
+    {
+        if (m_mockSamples.isEmpty())
+            regenerateMockSamples();
+    }
+
+    double sampleAt(double normalizedPos)
+    {
+        ensureMockSamples();
+        if (m_mockSamples.isEmpty()) return 0.0;
+
+        double clamped = std::clamp(normalizedPos, 0.0, 1.0);
+        double pos = clamped * (m_mockSamples.size() - 1);
+        int idx = int(pos);
+        double frac = pos - idx;
+        double a = m_mockSamples[idx];
+        double b = m_mockSamples[std::min(idx + 1, m_mockSamples.size() - 1)];
+        return a + (b - a) * frac;
+    }
+
     double m_duration = 0.0;
     double m_selBegin = -1.0;
     double m_selEnd = -1.0;
     double m_viewStart = 0.0;
     double m_viewEnd = 1.0;
     bool   m_hasView = false;
+    QVector<double> m_mockSamples;
 };
 
 //===================== Setup Tab =====================
