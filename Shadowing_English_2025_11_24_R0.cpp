@@ -36,6 +36,7 @@
 #include <cmath>
 #include <algorithm>
 #include <random>
+#include <vector>
 
 //===================== Data model =====================
 
@@ -401,12 +402,24 @@ protected:
         }
         body.closeSubpath();
 
+        // Soft drop shadow to anchor the shape
+        QPainterPath shadow = body.translated(0, 3);
+        p.fillPath(shadow, QColor(0, 0, 0, 50));
+
         QLinearGradient grad(r.topLeft(), r.bottomLeft());
         grad.setColorAt(0.0, QColor(122, 240, 213));
-        grad.setColorAt(1.0, QColor(0, 160, 210));
+        grad.setColorAt(0.55, QColor(0, 190, 220));
+        grad.setColorAt(1.0, QColor(0, 150, 200));
         p.fillPath(body, grad);
 
-        QPen outline(QColor(0, 200, 220));
+        // a subtle highlight on the top edge
+        QLinearGradient shine(r.topLeft(), r.bottomLeft());
+        shine.setColorAt(0.0, QColor(255, 255, 255, 45));
+        shine.setColorAt(0.35, QColor(255, 255, 255, 25));
+        shine.setColorAt(1.0, QColor(255, 255, 255, 0));
+        p.fillPath(body, shine);
+
+        QPen outline(QColor(0, 210, 230));
         outline.setWidth(2);
         p.setPen(outline);
         p.drawPath(body);
@@ -454,38 +467,77 @@ private:
         }
     }
 
-    void regenerateMockSamples(int targetCount = 3600)
+    void regenerateMockSamples(int targetCount = 4200)
     {
         m_mockSamples.clear();
         m_mockSamples.reserve(targetCount);
 
-        std::mt19937 rng(1337);
-        std::uniform_real_distribution<double> uni(0.0, 1.0);
-        std::uniform_real_distribution<double> quiet(0.01, 0.05);
-        std::uniform_real_distribution<double> burst(0.55, 0.95);
+        // Curated envelope control points to mimic the clustered syllable
+        // bursts and pauses shown in the reference screenshots. Positions are
+        // normalized in the 0..1 range, amplitudes are 0..1.
+        const std::vector<QPointF> keyFrames = {
+            {0.00, 0.02}, {0.03, 0.08}, {0.06, 0.04}, {0.11, 0.78},
+            {0.17, 0.62}, {0.21, 0.12}, {0.26, 0.70}, {0.30, 0.45},
+            {0.34, 0.10}, {0.40, 0.88}, {0.46, 0.64}, {0.52, 0.18},
+            {0.58, 0.76}, {0.63, 0.40}, {0.68, 0.05}, {0.73, 0.58},
+            {0.79, 0.70}, {0.84, 0.26}, {0.90, 0.32}, {0.96, 0.08},
+            {1.00, 0.02}
+        };
 
-        while (m_mockSamples.size() < targetCount) {
-            bool isSilence = uni(rng) < 0.28;
-            int blockLen = isSilence ? (80 + int(uni(rng) * 140))
-                                     : (170 + int(uni(rng) * 320));
-            double phase1 = uni(rng) * 2.0 * M_PI;
-            double phase2 = uni(rng) * 2.0 * M_PI;
+        auto smoothStep = [](double t) {
+            // cubic smoothstep for gentle transitions
+            return t * t * (3.0 - 2.0 * t);
+        };
 
-            for (int i = 0; i < blockLen && m_mockSamples.size() < targetCount; ++i) {
-                double t = double(i) / std::max(1, blockLen - 1);
-                if (isSilence) {
-                    double val = quiet(rng) + 0.01 * std::sin(10.0 * M_PI * t);
-                    m_mockSamples.push_back(val);
-                } else {
-                    double envelope = std::sin(M_PI * t);
-                    double texture = 0.3 * std::sin(8.0 * M_PI * t + phase1)
-                        + 0.18 * std::sin(18.0 * M_PI * t + phase2);
-                    double randomPop = (uni(rng) > 0.92) ? 0.25 * uni(rng) : 0.0;
-                    double core = envelope * burst(rng) + std::fabs(texture) + randomPop;
-                    double air = 0.04 * uni(rng);
-                    m_mockSamples.push_back(std::clamp(core + air, 0.0, 1.0));
-                }
+        auto lerp = [](double a, double b, double t) {
+            return a + (b - a) * t;
+        };
+
+        // Fill samples by interpolating the envelope and layering deterministic
+        // textures to avoid purely random spikes while keeping an organic look.
+        for (int i = 0; i < targetCount; ++i) {
+            double t = double(i) / std::max(1, targetCount - 1);
+
+            // locate segment
+            int k = 0;
+            while (k + 1 < int(keyFrames.size()) && keyFrames[k + 1].x() < t)
+                ++k;
+            int kNext = std::min<int>(k + 1, keyFrames.size() - 1);
+
+            double span = keyFrames[kNext].x() - keyFrames[k].x();
+            double localT = span > 0.0 ? (t - keyFrames[k].x()) / span : 0.0;
+            double eased = smoothStep(localT);
+            double envelope = lerp(keyFrames[k].y(), keyFrames[kNext].y(), eased);
+
+            // gentle breathing to imitate micro variations across the window
+            double ripple = 0.08 * envelope * std::sin(12.0 * M_PI * t)
+                + 0.05 * std::sin(34.0 * M_PI * t + 0.7);
+
+            // fine grain texture tied to envelope to avoid speckle when quiet
+            double texture = 0.04 * envelope * std::sin(96.0 * M_PI * t + 1.4)
+                + 0.02 * std::sin(210.0 * M_PI * t + 0.25);
+
+            // occasional calm gaps near zero to create distinct pauses
+            double pauseMask = 1.0;
+            if ((t > 0.185 && t < 0.21) || (t > 0.335 && t < 0.355)
+                || (t > 0.66 && t < 0.685)) {
+                double fade = smoothStep(std::min({
+                    (t - (t > 0.335 ? 0.335 : 0.185)) / 0.02,
+                    ((t > 0.66 ? 0.685 : (t > 0.185 ? 0.21 : 0.21)) - t) / 0.02,
+                    1.0}));
+                pauseMask = lerp(0.15, 1.0, fade);
             }
+
+            double value = std::clamp(envelope * pauseMask + ripple + texture,
+                0.0, 1.0);
+            m_mockSamples.push_back(value);
+        }
+
+        // Light smoothing pass to keep peaks rounded like the mockups
+        QVector<double> smooth = m_mockSamples;
+        for (int i = 1; i + 1 < smooth.size(); ++i) {
+            m_mockSamples[i] = 0.16 * smooth[i - 1] + 0.68 * smooth[i]
+                + 0.16 * smooth[i + 1];
         }
     }
 
