@@ -30,6 +30,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QSet>
+#include <QUrl>
 
 #include <cmath>
 #include <algorithm>
@@ -353,25 +355,56 @@ protected:
         QRectF r = rect().adjusted(5, 5, -5, -5);
         p.setRenderHint(QPainter::Antialiasing);
 
-        // fake waveform
-        QPen wavePen(QColor(0, 220, 220));
-        wavePen.setWidth(2);
-        p.setPen(wavePen);
+        // stylized waveform: filled symmetrical envelope with subtle variation
+        const int steps = 220;
+        const double halfH = r.height() * 0.45;
 
-        QPainterPath path;
-        path.moveTo(r.left(), r.center().y());
-        const int steps = 200;
-        for (int i = 1; i <= steps; ++i) {
+        // Build a closed path (top + bottom) to fill the waveform body
+        QPainterPath body;
+        body.moveTo(r.left(), r.center().y());
+        for (int i = 0; i <= steps; ++i) {
             double tNorm = double(i) / steps;
-            double tView = m_viewStart +
-                tNorm * (m_viewEnd - m_viewStart);
+            double tView = m_viewStart + tNorm * (m_viewEnd - m_viewStart);
+
+            double base = 0.55 + 0.25 * std::sin(tView * 4.0 * M_PI);
+            double detail = 0.18 * std::sin(tView * 11.0 * M_PI + 1.3)
+                + 0.12 * std::sin(tView * 7.0 * M_PI + 0.4);
+            double envelope = 0.65 + 0.35 * std::sin(M_PI * tNorm);
+            double amp = std::clamp(base + detail, 0.08, 1.0) * envelope;
+
             double x = r.left() + tNorm * r.width();
-            double y = r.center().y() +
-                std::sin((tView / std::max(m_duration, 0.001)) *
-                    12.0 * M_PI) * r.height() / 3.0;
-            path.lineTo(x, y);
+            double yTop = r.center().y() - amp * halfH;
+            body.lineTo(x, yTop);
         }
-        p.drawPath(path);
+        for (int i = steps; i >= 0; --i) {
+            double tNorm = double(i) / steps;
+            double tView = m_viewStart + tNorm * (m_viewEnd - m_viewStart);
+
+            double base = 0.55 + 0.25 * std::sin(tView * 4.0 * M_PI);
+            double detail = 0.18 * std::sin(tView * 11.0 * M_PI + 1.3)
+                + 0.12 * std::sin(tView * 7.0 * M_PI + 0.4);
+            double envelope = 0.65 + 0.35 * std::sin(M_PI * tNorm);
+            double amp = std::clamp(base + detail, 0.08, 1.0) * envelope;
+
+            double x = r.left() + tNorm * r.width();
+            double yBot = r.center().y() + amp * halfH;
+            body.lineTo(x, yBot);
+        }
+        body.closeSubpath();
+
+        QLinearGradient grad(r.topLeft(), r.bottomLeft());
+        grad.setColorAt(0.0, QColor(122, 240, 213));
+        grad.setColorAt(1.0, QColor(0, 160, 210));
+        p.fillPath(body, grad);
+
+        QPen outline(QColor(0, 200, 220));
+        outline.setWidth(2);
+        p.setPen(outline);
+        p.drawPath(body);
+
+        // center baseline for balance
+        p.setPen(QPen(QColor(0, 130, 190, 180), 1.5, Qt::DashLine));
+        p.drawLine(QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y()));
 
         // draw selected region
         if (m_selBegin >= 0.0 && m_selEnd > m_selBegin) {
