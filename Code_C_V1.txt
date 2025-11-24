@@ -1,0 +1,248 @@
+Here’s a clean checklist you can keep for the future so you don’t hit the same Qt/C++/Visual Studio problems again.
+
+---
+
+## 1. System & Toolchain
+
+* **OS**: Windows 10 / 11, 64-bit
+* **Compiler**: MSVC (the one that comes with Visual Studio)
+* **Qt**: Qt 6.x – with a **MSVC 64-bit kit** (e.g. `6.10.1 msvc2022_64`)
+* **IDE**: Visual Studio 2022 + **Qt Visual Studio Tools** extension
+
+The **Qt kit and Visual Studio must match**:
+
+* If you install `msvc2022_64` for Qt, you must build with **x64 / MSVC 2022** in Visual Studio.
+
+---
+
+## 2. Install Visual Studio correctly
+
+When installing Visual Studio 2022:
+
+1. Select the workload **“Desktop development with C++”**.
+2. Make sure these components are included:
+
+   * MSVC v143 (or newer) C++ x64 toolset
+   * Windows 10/11 SDK
+3. After installation, open VS and confirm you can create and build a normal **Console App (C++)**.
+
+---
+
+## 3. Install Qt (with the right kit)
+
+Using **Qt Online Installer**:
+
+1. Install into a simple path, e.g. `C:\Qt`.
+2. Under **Qt 6.x** select:
+
+   * `Qt 6.10.1 › MSVC 2022 64-bit` (or similar: *msvc2022_64*).
+3. You’ll end up with something like:
+
+   * `C:\Qt\6.10.1\msvc2022_64\bin`
+   * `C:\Qt\6.10.1\msvc2022_64\include`
+   * `C:\Qt\6.10.1\msvc2022_64\lib`
+
+You do **not** need MinGW if you are using Visual Studio; just the MSVC kit.
+
+---
+
+## 4. Qt Visual Studio Tools setup
+
+1. In Visual Studio:
+   **Extensions → Manage Extensions → Online**
+   Search for **“Qt Visual Studio Tools”** → Install → restart VS.
+2. Register your Qt version:
+
+   * **Extensions → Qt VS Tools → Qt Versions → Add…**
+   * **Path** = `C:\Qt\6.10.1\msvc2022_64` (the kit folder, not `bin` or `include`)
+   * Give it a name (e.g. `6.10.1_msvc2022_64`) and save.
+3. Optional: set that entry as the **default** Qt version.
+
+If this step is wrong, you’ll get errors like
+*“Cannot open include file: 'QtWidgets'”* or no Qt project templates.
+
+---
+
+## 5. Creating a correct Qt Widgets project
+
+When you want a GUI app like our Shadowing English tool:
+
+1. **Create New Project → “Qt Widgets Application”** (not “Empty Project”, not plain “Windows Desktop”).
+2. Project wizard:
+
+   * **Build system**: `Qt Visual Studio Project (Qt/MSBuild)`
+   * **Configurations**: keep **Debug** and **Release**, **Target = Windows**, **Platform = x64**.
+   * In the **Qt Modules** column tick at least:
+
+     * `Qt Core`
+     * `Qt GUI`
+     * `Qt Widgets`
+     * and for audio: `Qt Multimedia`
+3. Next screen:
+
+   * **Base class**: `QMainWindow` (for a main window with menus, toolbars, etc.)
+   * Class name / file names can be anything; it’s okay if we later ignore or delete the `.ui`/`.h`/`.qrc` VS generated.
+
+After finishing, Visual Studio creates a project that already knows how to:
+
+* Find Qt headers and libraries
+* Run **moc** automatically for QObject classes
+* Link `Qt5/6Core`, `Qt5/6Gui`, `Qt5/6Widgets`, `Qt6Multimedia`, etc.
+
+---
+
+## 6. Where to put your C++ code
+
+Inside the new project:
+
+* Use the main C++ file under **Source Files** (in your case `Shadowing_English_2025_11_24_R0.cpp`).
+* Put **all** our custom code there (or in extra `.h`/`.cpp` files you add to the project).
+* Make sure any new `.cpp` or `.h` you create is **added to the project** via Solution Explorer (Right-click → *Add → New Item…*). If it’s not in the project, moc and the compiler won’t see it.
+
+---
+
+## 7. Includes & moc – how to avoid the old errors
+
+### a) Includes
+
+With a proper Qt project you can simply do:
+
+```cpp
+#include <QtWidgets>
+#include <QtMultimedia>
+```
+
+or more specific:
+
+```cpp
+#include <QApplication>
+#include <QMainWindow>
+#include <QTableWidget>
+#include <QMediaPlayer>
+#include <QAudioOutput>
+```
+
+You **don’t** need to touch include paths manually.
+
+### b) moc files
+
+With **Qt/MSBuild**, **never** add:
+
+```cpp
+#include "moc_Something.cpp"
+```
+
+at the bottom of your files. That caused this error:
+
+> Cannot open source file 'moc_Shadowing_English_2025_11_24_R0.cpp'
+
+The build system will automatically:
+
+* Run `moc` on headers that contain `Q_OBJECT`
+* Compile the generated `moc_*.cpp` separately
+* Link everything together
+
+Rule of thumb:
+
+* Classes with `Q_OBJECT` → normally have their **own header (.h)**.
+* Ensure that header is inside the project (under “Header Files”) so moc can see it.
+* Do **not** include the moc `.cpp` manually.
+
+In our current R0 code we don’t actually use `Q_OBJECT`, so no moc file is needed at all.
+
+---
+
+## 8. Build configuration & running
+
+* Always build with a configuration that matches the Qt kit:
+
+  * **Debug | x64** (not x86) for `msvc2022_64`.
+* If VS says *“Unable to start program … .exe. The system cannot find the file specified”* even though build succeeded:
+
+  * Usually it means you built **another configuration** (e.g. Release) while the dropdown is set to Debug x64. Switch the dropdown to the configuration that actually built and rebuild.
+
+---
+
+## 9. Encoding & Unicode prompt
+
+When Visual Studio shows:
+
+> “Some Unicode characters in this file could not be saved in the current codepage…”
+
+Click **“Yes”** (or *Save With Other Encoding → UTF-8*) so the file is saved as Unicode/UTF-8.
+This avoids problems with Vietnamese labels or emoji in the source code.
+
+---
+
+## 10. Common C++/Qt pitfalls from your previous errors
+
+### 1) `std::min` / `std::max` issues
+
+* Include `<algorithm>` when you use `std::min` / `std::max`.
+
+* Avoid conflicting Windows macros (`min`, `max`) by:
+
+  * **Before including `<Windows.h>`** (if you ever do), add:
+
+    ```cpp
+    #define NOMINMAX
+    #include <Windows.h>
+    ```
+
+* Or simply replace complicated `std::min` logic with manual `if` as we did.
+
+### 2) `QTextStream::setCodec` removed in Qt 6
+
+* In Qt 6 you shouldn’t call `setCodec()`. The simplest safe option:
+
+  ```cpp
+  QFile f(path);
+  f.open(QIODevice::ReadOnly | QIODevice::Text);
+  QTextStream in(&f);      // UTF-8 by default if file is UTF-8
+  QString text = in.readAll();
+  ```
+
+* Just make sure your `.txt` files are saved as UTF-8.
+
+### 3) `identifier "QPainterPath" is undefined`
+
+* You must include its header:
+
+  ```cpp
+  #include <QPainterPath>
+  ```
+
+* And of course this only works in a Qt Widgets project with `QtGui` module enabled (which we have).
+
+---
+
+## 11. Minimal “good” skeleton for future projects
+
+Whenever you want to start a new GUI app, after creating a **Qt Widgets Application** project you can base your `main` on this:
+
+```cpp
+#include <QtWidgets>
+
+class MainWindow : public QMainWindow
+{
+public:
+    MainWindow() {
+        setWindowTitle("My Qt App");
+        resize(800, 600);
+    }
+};
+
+int main(int argc, char* argv[])
+{
+    QApplication app(argc, argv);
+    MainWindow w;
+    w.show();
+    return app.exec();
+}
+```
+
+If this compiles and runs, your environment (VS + Qt + toolchain) is correctly configured. From there you can paste in more advanced code (like our Shadowing English R0) much more safely.
+
+---
+
+If you’d like, next time we can turn this into a one-page PDF “Setup checklist for Qt + Visual Studio” that you can keep with your project.
